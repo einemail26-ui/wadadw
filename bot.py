@@ -13,8 +13,8 @@ TWITTER_CONFIGS = {
     "normiesART": {
         "api_key":             "vU9YN0PH66FlZ7KaH67HRVJ8g",
         "api_secret":          "XmZk8Kt0KccumPfSzfOJKWU1ht2VvHdc3CHZFmVVq4WIfV2M7e",
-        "access_token":        "1758736566879424512-evPFfcvVmfUwQ9rXrxBsI6SrU6CZxJ",
-        "access_token_secret": "oTSveTMCvcXi3URDttHuGDKJkrsSxP5JuI9a5rQtxyFcF",
+        "access_token":        "2039233498058223617-rLy3FV7pKSE4T5FXdEu5I5FJMkidtc",
+        "access_token_secret": "Rbfu43ufW1Lwz7CuHtTvX7J24CDw2R37EZ8i6TfZGWUs0",
         "bearer_token":        "AAAAAAAAAAAAAAAAAAAAAHPE8gEAAAAAoe16YJk%2FOlLYaWjuFGGsEoDVKzc%3DUsMN7pXsSPneUOx8HI9t6dFsIZupoxMHjhpKb0gGj2Q0VebE7k",
     },
 }
@@ -226,14 +226,14 @@ def process_sales(col, db):
             total_eth = sum(s["priceEth"] for s in group)
             count     = len(group)
             post_everywhere(col,
-                f"🧹 SWEEP! {col['name']}\n{short} kaufte {count} NFTs für {total_eth:.3f} ETH!\nhttps://etherscan.io/tx/{tx}\n#{col['name']} #NFT #Sweep",
+                f"🧹 SWEEP! {col['name']}\n{short} swept {count} NFTs for {total_eth:.3f} ETH!\nhttps://etherscan.io/tx/{tx}\n#{col['name']} #NFT #Sweep",
                 {"title": f"🧹 SWEEP — {count} NFTs!", "color": 0xFF6600,
                  "fields": [{"name":"Buyer","value":f"`{short}`","inline":True},{"name":"Count","value":str(count),"inline":True},{"name":"Total","value":f"{total_eth:.3f} ETH","inline":True},{"name":"Tx","value":f"[Etherscan](https://etherscan.io/tx/{tx})","inline":False}],
                  "timestamp": datetime.datetime.utcnow().isoformat()}
             )
             posted_sweeps.add(tx)
 
-        elif tx not in sweep_txs:
+        elif tx not in sweep_txs and price >= col["whale_threshold"]:
             is_whale = price >= col["whale_threshold"]
             header   = "🐋 WHALE SALE!" if is_whale else "🎉 New Sale!"
             post_everywhere(col,
@@ -245,7 +245,7 @@ def process_sales(col, db):
 
         if buyer.lower() in [w.lower() for w in db.get("whale_wallets", [])]:
             post_everywhere(col,
-                f"🐳 KNOWN WHALE! {col['name']}\n{short} kaufte #{token_id} für {price:.4f} ETH\n#{col['name']} #WhaleAlert",
+                f"🐳 KNOWN WHALE! {col['name']}\n{short} bought #{token_id} for {price:.4f} ETH\n#{col['name']} #WhaleAlert",
                 {"title": "🐳 Known Whale!", "color": 0x0099FF,
                  "fields": [{"name":"Wallet","value":f"`{buyer}`","inline":False},{"name":"Token","value":f"#{token_id}","inline":True},{"name":"Price","value":f"{price:.4f} ETH","inline":True}],
                  "timestamp": datetime.datetime.utcnow().isoformat()}
@@ -255,7 +255,7 @@ def process_sales(col, db):
         update_points(db, slug, buyer, pts)
         col_data["last_tx"] = tx
 
-    print(f"[{col['name']}] {len(new_sales)} neue Sales.")
+    print(f"[{col['name']}] {len(new_sales)} new sales.")
 
 
 # ================================================================
@@ -276,9 +276,9 @@ def check_floor_price(col, db):
             direction = "📈" if change_pct > 0 else "📉"
             word      = "UP" if change_pct > 0 else "DOWN"
             post_everywhere(col,
-                f"{direction} FLOOR {word} {abs(change_pct):.1f}%! {col['name']}\nNeu: {floor:.4f} ETH | Alt: {last_floor:.4f} ETH\n#{col['name']} #FloorAlert",
+                f"{direction} FLOOR {word} {abs(change_pct):.1f}%! {col['name']}\nNew: {floor:.4f} ETH | Old: {last_floor:.4f} ETH\n#{col['name']} #FloorAlert",
                 {"title": f"{direction} Floor {word} {abs(change_pct):.1f}%!", "color": 0x00FF00 if change_pct > 0 else 0xFF0000,
-                 "fields": [{"name":"Neuer Floor","value":f"{floor:.4f} ETH","inline":True},{"name":"Alter Floor","value":f"{last_floor:.4f} ETH","inline":True},{"name":"Änderung","value":f"{change_pct:+.1f}%","inline":True}],
+                 "fields": [{"name":"New Floor","value":f"{floor:.4f} ETH","inline":True},{"name":"Old Floor","value":f"{last_floor:.4f} ETH","inline":True},{"name":"Change","value":f"{change_pct:+.1f}%","inline":True}],
                  "timestamp": datetime.datetime.utcnow().isoformat()}
             )
     col_data["last_floor"] = floor
@@ -296,7 +296,7 @@ def check_volume_milestones(col, db):
     for milestone in sorted(col.get("volume_milestones", [])):
         if volume >= milestone and milestone not in hits:
             post_everywhere(col,
-                f"🎉 MILESTONE! {col['name']}\n{milestone} ETH Volume erreicht! 🚀\nAktuell: {volume:.2f} ETH\n#{col['name']} #NFT",
+                f"🎉 MILESTONE! {col['name']}\n{milestone} ETH Volume reached! 🚀\nCurrent: {volume:.2f} ETH\n#{col['name']} #NFT",
                 {"title": f"🎉 {milestone} ETH Milestone!", "color": 0xFFD700,
                  "fields": [{"name":"Milestone","value":f"{milestone} ETH","inline":True},{"name":"Volume","value":f"{volume:.2f} ETH","inline":True}],
                  "timestamp": datetime.datetime.utcnow().isoformat()}
@@ -315,29 +315,29 @@ def post_rankings(col, db, now):
 
     top_daily = get_top_buyers(db, slug, days=1)
     if top_daily:
-        lines = "\n".join(f"{emojis[i]} {b[:6]}...{b[-4:]} — {p} Pkt" for i, (b, p) in enumerate(top_daily))
+        lines = "\n".join(f"{emojis[i]} {b[:6]}...{b[-4:]} — {p} pts" for i, (b, p) in enumerate(top_daily))
         post_everywhere(col,
             f"🏆 DAILY {col['name'].upper()} RANKING 🏆\n\n{lines}\n\n#{col['name']} #NFT",
             {"title": f"🏆 Daily Ranking — {col['name']}", "color": 0x5865F2,
-             "fields": [{"name": f"{emojis[i]} #{i+1}", "value": f"`{b[:6]}...{b[-4:]}` — **{p} Pkt**", "inline": False} for i, (b, p) in enumerate(top_daily)],
+             "fields": [{"name": f"{emojis[i]} #{i+1}", "value": f"`{b[:6]}...{b[-4:]}` — **{p} pts**", "inline": False} for i, (b, p) in enumerate(top_daily)],
              "timestamp": datetime.datetime.utcnow().isoformat()}
         )
 
     if now.weekday() == 6:
         top_weekly = get_top_buyers(db, slug, days=7)
         if top_weekly:
-            lines = "\n".join(f"{emojis[i]} {b[:6]}...{b[-4:]} — {p} Pkt" for i, (b, p) in enumerate(top_weekly))
+            lines = "\n".join(f"{emojis[i]} {b[:6]}...{b[-4:]} — {p} pts" for i, (b, p) in enumerate(top_weekly))
             post_everywhere(col,
                 f"🏆 WEEKLY {col['name'].upper()} RANKING 🏆\n\n{lines}\n\n#{col['name']} #NFT",
                 {"title": f"🏆 Weekly Ranking — {col['name']}", "color": 0xFFD700,
-                 "fields": [{"name": f"{emojis[i]} #{i+1}", "value": f"`{b[:6]}...{b[-4:]}` — **{p} Pkt**", "inline": False} for i, (b, p) in enumerate(top_weekly)],
+                 "fields": [{"name": f"{emojis[i]} #{i+1}", "value": f"`{b[:6]}...{b[-4:]}` — **{p} pts**", "inline": False} for i, (b, p) in enumerate(top_weekly)],
                  "timestamp": datetime.datetime.utcnow().isoformat()}
             )
             winner, pts = top_weekly[0]
             post_everywhere(col,
-                f"⭐ COLLECTOR OF THE WEEK — {col['name']}\n🏆 {winner[:6]}...{winner[-4:]}\nPunkte: {pts}\n#{col['name']} #CollectorOfTheWeek",
+                f"⭐ COLLECTOR OF THE WEEK — {col['name']}\n🏆 {winner[:6]}...{winner[-4:]}\nPoints: {pts}\n#{col['name']} #CollectorOfTheWeek",
                 {"title": "⭐ Collector of the Week!", "color": 0xFFD700,
-                 "fields": [{"name":"Wallet","value":f"`{winner}`","inline":False},{"name":"Punkte","value":str(pts),"inline":True}],
+                 "fields": [{"name":"Wallet","value":f"`{winner}`","inline":False},{"name":"Points","value":str(pts),"inline":True}],
                  "timestamp": datetime.datetime.utcnow().isoformat()}
             )
 
@@ -362,16 +362,16 @@ def main():
 
         for col in COLLECTIONS:
             try: process_sales(col, db)
-            except Exception as e: print(f"[{col['name']}] Sales-Fehler: {e}")
+            except Exception as e: print(f"[{col['name']}] Sales error: {e}")
 
             try: check_volume_milestones(col, db)
-            except Exception as e: print(f"[{col['name']}] Milestone-Fehler: {e}")
+            except Exception as e: print(f"[{col['name']}] Milestone error: {e}")
 
         floor_counter += 1
         if floor_counter >= FLOOR_CHECK_EVERY:
             for col in COLLECTIONS:
                 try: check_floor_price(col, db)
-                except Exception as e: print(f"[{col['name']}] Floor-Fehler: {e}")
+                except Exception as e: print(f"[{col['name']}] Floor error: {e}")
             floor_counter = 0
 
         save_db(db)
@@ -380,7 +380,7 @@ def main():
             db = load_db()
             for col in COLLECTIONS:
                 try: post_rankings(col, db, now)
-                except Exception as e: print(f"[{col['name']}] Ranking-Fehler: {e}")
+                except Exception as e: print(f"[{col['name']}] Ranking error: {e}")
             last_rank_date = now.date()
 
         time.sleep(CHECK_INTERVAL)
