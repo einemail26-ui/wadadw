@@ -1,12 +1,7 @@
-import tweepy
-import requests
-import time
-import json
-import os
-import datetime
+import tweepy, requests, time, json, os, datetime
 
 # ================================================================
-# KONFIGURATION
+# CONFIG
 # ================================================================
 
 TWITTER_CONFIGS = {
@@ -21,340 +16,542 @@ TWITTER_CONFIGS = {
 
 COLLECTIONS = [
     {
-        "name":              "normiesART",
-        "slug":              "normies",
-        "contract":          "0x9435208ca4a8dfba4bbffc52bd4d65fac3a87fd4",
-        "twitter_account":   "normiesART",
-        "discord_webhook":   "https://discord.com/api/webhooks/DEIN_WEBHOOK",
-        "whale_threshold":   0.5,
-        "sweep_threshold":   3,
-        "floor_alert_pct":   5,
+        "name":            "normiesART",
+        "slug":            "normies",
+        "contract":        "0x9435208ca4a8dfba4bbffc52bd4d65fac3a87fd4",
+        "twitter_account": "normiesART",
+        "discord_webhook": "YOUR_DISCORD_WEBHOOK",
+        "sale_min_eth":    0.5,
+        "sweep_min_eth":   1.0,
+        "sweep_count":     5,
+        "sweep_window":    600,
+        "burn_ap_min":     50,
+        "canvas_ap_min":   100,
+        "floor_alert_pct": 5,
         "volume_milestones": [10, 25, 50, 100, 250, 500],
     },
 ]
 
-WHALE_WALLETS = []
-
-OPENSEA_API_KEY = "0439IVxW5fla2biNld4HmYggLYuhKqM8dVcewCw1xGWmNZQY"
-OPENSEA_HEADERS = {
-    "accept":    "application/json",
-    "x-api-key": OPENSEA_API_KEY,
-}
-
-DB_FILE           = "nft_bot_pro.json"
-CHECK_INTERVAL    = 60
+GRAIL_TYPES     = ["Cat", "Alien", "Agent"]
+OPENSEA_HEADERS = {"accept": "application/json", "x-api-key": "0439IVxW5fla2biNld4HmYggLYuhKqM8dVcewCw1xGWmNZQY"}
+NORMIES_API     = "https://api.normies.art"
+DB_FILE         = "nft_bot_pro.json"
+CHECK_INTERVAL  = 60
 FLOOR_CHECK_EVERY = 5
-DAILY_HOUR        = 20
-
+DAILY_HOUR      = 20
 
 # ================================================================
-# DATENBANK
+# TWEET TEMPLATES
+# ================================================================
+
+def tweet_single_sale(token_id, price_eth, price_usd):
+    return (
+        f"Oh look! 😯\n\n"
+        f"Another big @normiesART single sale!\n\n"
+        f"Normie #{token_id} — {price_eth:.4f} ETH ({price_usd})\n\n"
+        f"Normies."
+    )
+
+def tweet_sweep(count, total_eth, total_usd):
+    return (
+        f"Woah, watch out! 👀\n\n"
+        f"Another big @normiesART sweep!\n\n"
+        f"{count} Normies swept for {total_eth:.3f} ETH ({total_usd})\n\n"
+        f"Normies."
+    )
+
+def tweet_grail(token_id, ntype, price_eth, price_usd):
+    article = "an" if ntype in ["Alien", "Agent"] else "a"
+    return (
+        f"Can't believe it, that's {article} {ntype}! 🥶\n\n"
+        f"That's an @normiesART grail for sure!\n\n"
+        f"Normie #{token_id} — {price_eth:.4f} ETH ({price_usd})\n\n"
+        f"Normies."
+    )
+
+def tweet_burn(token_id, count, ap):
+    return (
+        f"🔥 Burn alert!\n\n"
+        f"Normie #{token_id} just received {ap} Action Points after {count} burn(s)!\n\n"
+        f"@normiesART #normies #NormiesCanvas"
+    )
+
+def tweet_canvas(token_id, ap, changes):
+    return (
+        f"🎨 Canvas change!\n\n"
+        f"Normie #{token_id} was just edited — {changes} pixels changed.\n"
+        f"Action Points: {ap}\n\n"
+        f"@normiesART #normies #NormiesCanvas"
+    )
+
+def tweet_floor(direction, pct, new_floor, new_usd):
+    word = "up" if direction == "up" else "down"
+    emoji = "📈" if direction == "up" else "📉"
+    return (
+        f"{emoji} Floor {word} {pct:.1f}%!\n\n"
+        f"New floor: {new_floor:.4f} ETH ({new_usd})\n\n"
+        f"@normiesART #normies #NFT"
+    )
+
+def tweet_milestone(milestone, volume):
+    return (
+        f"🎉 Milestone reached!\n\n"
+        f"@normiesART just hit {milestone} ETH in total volume!\n"
+        f"Current: {volume:.2f} ETH\n\n"
+        f"#normies #NFT"
+    )
+
+def tweet_daily_ranking(lines):
+    return f"🏆 Daily @normiesART Ranking\n\n{lines}\n\n#normies #NFT"
+
+def tweet_weekly_ranking(lines):
+    return f"🏆 Weekly @normiesART Ranking\n\n{lines}\n\n#normies #NFT"
+
+def tweet_cotw(wallet, eth_spent):
+    return (
+        f"⭐ Collector of the Week!\n\n"
+        f"🏆 {wallet}\n"
+        f"Spent: {eth_spent:.3f} ETH this week\n\n"
+        f"@normiesART #normies #CollectorOfTheWeek"
+    )
+
+# ================================================================
+# ETH/USD PRICE
+# ================================================================
+
+_eth_cache = {"price": 0, "ts": 0}
+
+def get_eth_usd():
+    now = time.time()
+    if now - _eth_cache["ts"] < 300:
+        return _eth_cache["price"]
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd",
+            timeout=8
+        )
+        p = r.json()["ethereum"]["usd"]
+        _eth_cache.update({"price": p, "ts": now})
+        return p
+    except:
+        return _eth_cache["price"] or 2000
+
+def fmt_usd(eth):
+    usd = eth * get_eth_usd()
+    return f"${usd:,.0f}" if usd >= 1000 else f"${usd:.2f}"
+
+# ================================================================
+# DATABASE
 # ================================================================
 
 def init_db():
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w") as f:
-            json.dump({"collections": {}, "whale_wallets": WHALE_WALLETS}, f, indent=2)
+            json.dump({"collections": {}}, f)
     with open(DB_FILE, "r+") as f:
         db = json.load(f)
         for col in COLLECTIONS:
-            cid = col["slug"]
-            if cid not in db["collections"]:
-                db["collections"][cid] = {
-                    "last_tx":               None,
-                    "last_floor":            None,
-                    "volume_milestones_hit": [],
-                    "total_volume":          0.0,
-                    "history":               {}
+            s = col["slug"]
+            if s not in db["collections"]:
+                db["collections"][s] = {
+                    "last_sale_tx":   None,
+                    "last_burn_id":   None,
+                    "last_canvas_tx": {},
+                    "last_floor":     None,
+                    "total_volume":   0.0,
+                    "milestones_hit": [],
+                    "history":        {},
+                    "buyer_window":   {},
                 }
-        f.seek(0)
-        json.dump(db, f, indent=2)
-        f.truncate()
+        f.seek(0); json.dump(db, f, indent=2); f.truncate()
 
 def load_db():
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
+    with open(DB_FILE, "r") as f: return json.load(f)
 
 def save_db(db):
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f, indent=2)
-
-
-# ================================================================
-# TWITTER
-# ================================================================
-
-_twitter_clients = {}
-
-def get_twitter_client(account_name):
-    if account_name not in _twitter_clients:
-        cfg = TWITTER_CONFIGS[account_name]
-        client = tweepy.Client(
-            cfg["bearer_token"], cfg["api_key"], cfg["api_secret"],
-            cfg["access_token"], cfg["access_token_secret"]
-        )
-        _twitter_clients[account_name] = client
-    return _twitter_clients[account_name]
-
+    with open(DB_FILE, "w") as f: json.dump(db, f, indent=2)
 
 # ================================================================
 # POSTING
 # ================================================================
 
-def post_to_twitter(account_name, text):
+_tc = {}
+def get_tw(name):
+    if name not in _tc:
+        c = TWITTER_CONFIGS[name]
+        _tc[name] = tweepy.Client(c["bearer_token"], c["api_key"], c["api_secret"], c["access_token"], c["access_token_secret"])
+    return _tc[name]
+
+def post_tw(acc, text):
     try:
-        get_twitter_client(account_name).create_tweet(text=text)
-        print(f"[Twitter] OK: {text[:60]}...")
+        get_tw(acc).create_tweet(text=text)
+        print(f"[TW] {text[:70]}...")
     except Exception as e:
-        print(f"[Twitter] Fehler: {e}")
+        print(f"[TW ERR] {e}")
 
-def post_to_discord(webhook_url, embed):
-    if not webhook_url or "DEIN_WEBHOOK" in webhook_url:
-        return
-    try:
-        r = requests.post(webhook_url, json={"embeds": [embed]}, timeout=10)
-        if r.status_code in (200, 204):
-            print(f"[Discord] OK: {embed.get('title', '')}")
-    except Exception as e:
-        print(f"[Discord] Fehler: {e}")
+def post_dc(url, embed):
+    if not url or "YOUR_DISCORD" in url: return
+    try: requests.post(url, json={"embeds": [embed]}, timeout=10)
+    except: pass
 
-def post_everywhere(col, tw_text, disc_embed):
-    post_to_twitter(col["twitter_account"], tw_text)
-    post_to_discord(col["discord_webhook"], disc_embed)
-
+def post_all(col, tw, dc):
+    post_tw(col["twitter_account"], tw)
+    post_dc(col["discord_webhook"], dc)
 
 # ================================================================
-# OPENSEA API v2
+# NORMIES API
+# ================================================================
+
+def get_normie_type(token_id):
+    try:
+        r = requests.get(f"{NORMIES_API}/normie/{token_id}/traits", timeout=8)
+        for a in r.json().get("attributes", []):
+            if a.get("trait_type") == "Type":
+                return a.get("value", "")
+        return ""
+    except:
+        return ""
+
+def get_normie_ap(token_id):
+    try:
+        r = requests.get(f"{NORMIES_API}/normie/{token_id}/canvas/info", timeout=8)
+        return r.json().get("actionPoints", 0)
+    except:
+        return 0
+
+def get_normie_img(token_id):
+    return f"{NORMIES_API}/normie/{token_id}/image.png"
+
+def get_burn_history(limit=10):
+    try:
+        r = requests.get(f"{NORMIES_API}/history/burns?limit={limit}", timeout=8)
+        d = r.json()
+        return d if isinstance(d, list) else []
+    except:
+        return []
+
+def get_canvas_versions(token_id):
+    try:
+        r = requests.get(f"{NORMIES_API}/history/normie/{token_id}/versions", timeout=8)
+        d = r.json()
+        return d if isinstance(d, list) else []
+    except:
+        return []
+
+# ================================================================
+# OPENSEA
 # ================================================================
 
 def get_recent_sales(slug, limit=50):
-    url = f"https://api.opensea.io/api/v2/events/collection/{slug}"
     try:
-        r    = requests.get(url, headers=OPENSEA_HEADERS, params={"event_type": "sale", "limit": limit}, timeout=10)
-        data = r.json()
-    except Exception as e:
-        print(f"[OpenSea] Sales Fehler: {e}")
-        return []
-
-    sales = []
-    for event in data.get("asset_events", []):
-        try:
-            payment  = event.get("payment", {})
-            quantity = int(payment.get("quantity", "0"))
-            decimals = int(payment.get("decimals", 18))
-            price    = quantity / (10 ** decimals)
-            nft      = event.get("nft", {})
+        r = requests.get(
+            f"https://api.opensea.io/api/v2/events/collection/{slug}",
+            headers=OPENSEA_HEADERS,
+            params={"event_type": "sale", "limit": limit},
+            timeout=10
+        )
+        sales = []
+        for e in r.json().get("asset_events", []):
+            p   = e.get("payment", {})
+            qty = int(p.get("quantity", "0"))
+            dec = int(p.get("decimals", 18))
+            nft = e.get("nft", {})
             sales.append({
-                "tx":       event.get("transaction", ""),
-                "buyer":    event.get("buyer", ""),
-                "tokenId":  nft.get("identifier", "?"),
-                "priceEth": price,
-                "url":      nft.get("opensea_url", ""),
+                "tx":      e.get("transaction", ""),
+                "buyer":   e.get("buyer", ""),
+                "tokenId": nft.get("identifier", "?"),
+                "price":   qty / (10 ** dec),
+                "url":     nft.get("opensea_url", ""),
             })
-        except Exception:
-            continue
-    return sales
+        return sales
+    except Exception as e:
+        print(f"[OS ERR] {e}"); return []
 
 def get_collection_stats(slug):
-    url = f"https://api.opensea.io/api/v2/collections/{slug}/stats"
     try:
-        r    = requests.get(url, headers=OPENSEA_HEADERS, timeout=10)
-        data = r.json().get("total", {})
-        return data.get("floor_price"), data.get("volume")
-    except Exception as e:
-        print(f"[OpenSea] Stats Fehler: {e}")
+        r = requests.get(f"https://api.opensea.io/api/v2/collections/{slug}/stats", headers=OPENSEA_HEADERS, timeout=10)
+        t = r.json().get("total", {})
+        return t.get("floor_price"), t.get("volume")
+    except:
         return None, None
 
-
 # ================================================================
-# PUNKTESYSTEM
+# SPENDING TRACKER (replaces points)
 # ================================================================
 
-def update_points(db, slug, buyer, points):
+def update_spending(db, slug, buyer, eth):
     today = str(datetime.date.today())
-    hist  = db["collections"][slug]["history"]
-    if today not in hist: hist[today] = {}
-    if buyer not in hist[today]: hist[today][buyer] = {"points": 0}
-    hist[today][buyer]["points"] += points
+    h = db["collections"][slug]["history"]
+    if today not in h: h[today] = {}
+    if buyer not in h[today]: h[today][buyer] = {"eth": 0.0}
+    h[today][buyer]["eth"] += eth
 
-def get_top_buyers(db, slug, days=1, top_n=5):
-    today    = datetime.date.today()
-    combined = {}
+def top_spenders(db, slug, days=1, n=5):
+    today = datetime.date.today(); c = {}
     for i in range(days):
-        d_str = str(today - datetime.timedelta(days=i))
-        for buyer, stats in db["collections"][slug]["history"].get(d_str, {}).items():
-            combined[buyer] = combined.get(buyer, 0) + stats["points"]
-    return sorted(combined.items(), key=lambda x: x[1], reverse=True)[:top_n]
-
+        for b, s in db["collections"][slug]["history"].get(str(today - datetime.timedelta(days=i)), {}).items():
+            c[b] = c.get(b, 0.0) + s.get("eth", 0.0)
+    return sorted(c.items(), key=lambda x: x[1], reverse=True)[:n]
 
 # ================================================================
-# FEATURE 1: SALES + SWEEP + WHALE
+# FEATURE 1: SALES
 # ================================================================
 
 def process_sales(col, db):
-    slug     = col["slug"]
-    col_data = db["collections"][slug]
-    sales    = get_recent_sales(slug)
+    slug = col["slug"]
+    cd   = db["collections"][slug]
+    sales = get_recent_sales(slug)
     if not sales: return
 
     new_sales = []
-    for sale in sales:
-        if sale["tx"] == col_data["last_tx"]: break
-        new_sales.append(sale)
+    for s in sales:
+        if s["tx"] == cd["last_sale_tx"]: break
+        new_sales.append(s)
     if not new_sales: return
 
-    tx_count  = {}
-    for s in new_sales:
-        tx_count[s["tx"]] = tx_count.get(s["tx"], 0) + 1
-    sweep_txs     = {tx for tx, cnt in tx_count.items() if cnt >= col["sweep_threshold"]}
-    posted_sweeps = set()
-    all_by_tx     = {}
-    for s in sales:
-        all_by_tx.setdefault(s["tx"], []).append(s)
+    now_ts = time.time()
+    window = col["sweep_window"]
+    bw     = cd.get("buyer_window", {})
+    bw     = {b: [t for t in times if now_ts - t < window] for b, times in bw.items()}
 
-    for sale in new_sales:
-        tx       = sale["tx"]
-        buyer    = sale["buyer"]
-        price    = sale["priceEth"]
-        token_id = sale["tokenId"]
-        url      = sale["url"] or f"https://opensea.io/assets/ethereum/{col['contract']}/{token_id}"
-        pts      = 5 if price >= col["whale_threshold"] else 1
+    sweep_posted = set()
+
+    for s in reversed(new_sales):
+        tx       = s["tx"]
+        buyer    = s["buyer"]
+        price    = s["price"]
+        token_id = s["tokenId"]
+        url      = s["url"] or f"https://opensea.io/assets/ethereum/{col['contract']}/{token_id}"
         short    = f"{buyer[:6]}...{buyer[-4:]}"
+        usd      = fmt_usd(price)
 
-        if tx in sweep_txs and tx not in posted_sweeps:
-            group     = all_by_tx.get(tx, [])
-            total_eth = sum(s["priceEth"] for s in group)
-            count     = len(group)
-            post_everywhere(col,
-                f"🧹 SWEEP! {col['name']}\n{short} swept {count} NFTs for {total_eth:.3f} ETH!\nhttps://etherscan.io/tx/{tx}\n#{col['name']} #NFT #Sweep",
-                {"title": f"🧹 SWEEP — {count} NFTs!", "color": 0xFF6600,
-                 "fields": [{"name":"Buyer","value":f"`{short}`","inline":True},{"name":"Count","value":str(count),"inline":True},{"name":"Total","value":f"{total_eth:.3f} ETH","inline":True},{"name":"Tx","value":f"[Etherscan](https://etherscan.io/tx/{tx})","inline":False}],
-                 "timestamp": datetime.datetime.utcnow().isoformat()}
-            )
-            posted_sweeps.add(tx)
+        if buyer not in bw: bw[buyer] = []
+        bw[buyer].append(now_ts)
 
-        elif tx not in sweep_txs and price >= col["whale_threshold"]:
-            is_whale = price >= col["whale_threshold"]
-            header   = "🐋 WHALE SALE!" if is_whale else "🎉 New Sale!"
-            post_everywhere(col,
-                f"{header} {col['name']} #{token_id}\nBuyer: {short}\nPrice: {price:.4f} ETH\n{url}\n#{col['name']} #NFT",
-                {"title": f"{header} #{token_id}", "color": 0xFF8800 if is_whale else 0x00CC66,
-                 "fields": [{"name":"Buyer","value":f"`{short}`","inline":True},{"name":"Price","value":f"{price:.4f} ETH","inline":True},{"name":"Points","value":f"+{pts}","inline":True},{"name":"Link","value":f"[OpenSea]({url})","inline":False}],
-                 "timestamp": datetime.datetime.utcnow().isoformat()}
-            )
+        # buyer total ETH in window
+        buyer_total_eth = sum(
+            s2["price"] for s2 in new_sales if s2["buyer"] == buyer
+        )
 
-        if buyer.lower() in [w.lower() for w in db.get("whale_wallets", [])]:
-            post_everywhere(col,
-                f"🐳 KNOWN WHALE! {col['name']}\n{short} bought #{token_id} for {price:.4f} ETH\n#{col['name']} #WhaleAlert",
-                {"title": "🐳 Known Whale!", "color": 0x0099FF,
-                 "fields": [{"name":"Wallet","value":f"`{buyer}`","inline":False},{"name":"Token","value":f"#{token_id}","inline":True},{"name":"Price","value":f"{price:.4f} ETH","inline":True}],
-                 "timestamp": datetime.datetime.utcnow().isoformat()}
-            )
+        # Sweep check
+        if len(bw[buyer]) >= col["sweep_count"] and buyer_total_eth >= col["sweep_min_eth"] and buyer not in sweep_posted:
+            cnt       = len(bw[buyer])
+            total_usd = fmt_usd(buyer_total_eth)
+            tw = tweet_sweep(cnt, buyer_total_eth, total_usd)
+            dc = {
+                "title":  f"👀 Sweep — {cnt} Normies!",
+                "color":  0xFF6600,
+                "fields": [
+                    {"name": "Buyer",  "value": f"`{short}`",              "inline": True},
+                    {"name": "Count",  "value": str(cnt),                   "inline": True},
+                    {"name": "Total",  "value": f"{buyer_total_eth:.3f} ETH ({total_usd})", "inline": True},
+                ],
+                "timestamp": datetime.datetime.utcnow().isoformat()
+            }
+            post_all(col, tw, dc)
+            sweep_posted.add(buyer)
+            bw[buyer] = []
 
-        col_data["total_volume"] = col_data.get("total_volume", 0.0) + price
-        update_points(db, slug, buyer, pts)
-        col_data["last_tx"] = tx
+        elif buyer not in sweep_posted and price >= col["sale_min_eth"]:
+            # Check grail type
+            ntype = get_normie_type(token_id)
+            is_grail = ntype in GRAIL_TYPES
 
+            if is_grail:
+                tw = tweet_grail(token_id, ntype, price, usd)
+                color = 0x9B59B6
+            else:
+                tw = tweet_single_sale(token_id, price, usd)
+                color = 0x00CC66
+
+            dc = {
+                "title":  f"{'🥶 GRAIL' if is_grail else '😯 Sale'} — #{token_id}",
+                "color":  color,
+                "fields": [
+                    {"name": "Buyer",  "value": f"`{short}`",    "inline": True},
+                    {"name": "Price",  "value": f"{price:.4f} ETH ({usd})", "inline": True},
+                    {"name": "Type",   "value": ntype or "Human","inline": True},
+                    {"name": "Link",   "value": f"[OpenSea]({url})", "inline": False},
+                ],
+                "image":     {"url": get_normie_img(token_id)},
+                "timestamp": datetime.datetime.utcnow().isoformat()
+            }
+            post_all(col, tw, dc)
+
+        cd["total_volume"] = cd.get("total_volume", 0.0) + price
+        update_spending(db, slug, buyer, price)
+        cd["last_sale_tx"] = tx
+
+    cd["buyer_window"] = bw
     print(f"[{col['name']}] {len(new_sales)} new sales.")
 
+# ================================================================
+# FEATURE 2: BURNS
+# ================================================================
+
+def check_burns(col, db):
+    slug  = col["slug"]
+    cd    = db["collections"][slug]
+    burns = get_burn_history(10)
+    if not burns: return
+
+    last_id   = cd.get("last_burn_id")
+    new_burns = []
+    for b in burns:
+        if str(b.get("commitId")) == str(last_id): break
+        new_burns.append(b)
+
+    for burn in reversed(new_burns):
+        receiver  = burn.get("receiverTokenId", "?")
+        count     = burn.get("tokenCount", 0)
+        owner     = burn.get("owner", "")
+        short     = f"{owner[:6]}...{owner[-4:]}"
+        ap        = get_normie_ap(receiver)
+
+        if ap >= col["burn_ap_min"]:
+            tw = tweet_burn(receiver, count, ap)
+            dc = {
+                "title":  f"🔥 Burn — #{receiver} got {ap} AP!",
+                "color":  0xFF3300,
+                "fields": [
+                    {"name": "Owner",   "value": f"`{short}`", "inline": True},
+                    {"name": "Burned",  "value": str(count),   "inline": True},
+                    {"name": "AP",      "value": str(ap),       "inline": True},
+                ],
+                "image":     {"url": get_normie_img(receiver)},
+                "timestamp": datetime.datetime.utcnow().isoformat()
+            }
+            post_all(col, tw, dc)
+
+        cd["last_burn_id"] = str(burn.get("commitId"))
 
 # ================================================================
-# FEATURE 2: FLOOR ALERTS
+# FEATURE 3: CANVAS CHANGES
 # ================================================================
 
-def check_floor_price(col, db):
+def check_canvas_changes(col, db):
     slug     = col["slug"]
-    col_data = db["collections"][slug]
-    floor, volume = get_collection_stats(slug)
+    cd       = db["collections"][slug]
+    last_cvs = cd.get("last_canvas_tx", {})
+
+    for token_id in list(last_cvs.keys()):
+        versions = get_canvas_versions(token_id)
+        if not versions: continue
+        latest_tx = versions[-1].get("txHash", "")
+        if latest_tx and latest_tx != last_cvs.get(str(token_id)):
+            ap = get_normie_ap(token_id)
+            if ap >= col["canvas_ap_min"]:
+                changes = versions[-1].get("changeCount", 0)
+                tw = tweet_canvas(token_id, ap, changes)
+                dc = {
+                    "title":  f"🎨 Canvas Change — #{token_id}",
+                    "color":  0x0099FF,
+                    "fields": [
+                        {"name": "Pixels",  "value": str(changes), "inline": True},
+                        {"name": "AP",      "value": str(ap),       "inline": True},
+                    ],
+                    "image":     {"url": get_normie_img(token_id)},
+                    "timestamp": datetime.datetime.utcnow().isoformat()
+                }
+                post_all(col, tw, dc)
+            last_cvs[str(token_id)] = latest_tx
+
+    cd["last_canvas_tx"] = last_cvs
+
+# ================================================================
+# FEATURE 4: FLOOR ALERTS
+# ================================================================
+
+def check_floor(col, db):
+    slug = col["slug"]; cd = db["collections"][slug]
+    floor, vol = get_collection_stats(slug)
     if floor is None: return
-    if volume: col_data["total_volume"] = float(volume)
-
-    last_floor = col_data.get("last_floor")
-    if last_floor and last_floor > 0:
-        change_pct = ((floor - last_floor) / last_floor) * 100
-        if abs(change_pct) >= col.get("floor_alert_pct", 5):
-            direction = "📈" if change_pct > 0 else "📉"
-            word      = "UP" if change_pct > 0 else "DOWN"
-            post_everywhere(col,
-                f"{direction} FLOOR {word} {abs(change_pct):.1f}%! {col['name']}\nNew: {floor:.4f} ETH | Old: {last_floor:.4f} ETH\n#{col['name']} #FloorAlert",
-                {"title": f"{direction} Floor {word} {abs(change_pct):.1f}%!", "color": 0x00FF00 if change_pct > 0 else 0xFF0000,
-                 "fields": [{"name":"New Floor","value":f"{floor:.4f} ETH","inline":True},{"name":"Old Floor","value":f"{last_floor:.4f} ETH","inline":True},{"name":"Change","value":f"{change_pct:+.1f}%","inline":True}],
-                 "timestamp": datetime.datetime.utcnow().isoformat()}
-            )
-    col_data["last_floor"] = floor
-
-
-# ================================================================
-# FEATURE 3: VOLUME MILESTONES
-# ================================================================
-
-def check_volume_milestones(col, db):
-    slug     = col["slug"]
-    col_data = db["collections"][slug]
-    volume   = col_data.get("total_volume", 0.0)
-    hits     = col_data.get("volume_milestones_hit", [])
-    for milestone in sorted(col.get("volume_milestones", [])):
-        if volume >= milestone and milestone not in hits:
-            post_everywhere(col,
-                f"🎉 MILESTONE! {col['name']}\n{milestone} ETH Volume reached! 🚀\nCurrent: {volume:.2f} ETH\n#{col['name']} #NFT",
-                {"title": f"🎉 {milestone} ETH Milestone!", "color": 0xFFD700,
-                 "fields": [{"name":"Milestone","value":f"{milestone} ETH","inline":True},{"name":"Volume","value":f"{volume:.2f} ETH","inline":True}],
-                 "timestamp": datetime.datetime.utcnow().isoformat()}
-            )
-            hits.append(milestone)
-    col_data["volume_milestones_hit"] = hits
-
+    if vol: cd["total_volume"] = float(vol)
+    last = cd.get("last_floor")
+    if last and last > 0:
+        pct = ((floor - last) / last) * 100
+        if abs(pct) >= col.get("floor_alert_pct", 5):
+            direction = "up" if pct > 0 else "down"
+            tw = tweet_floor(direction, abs(pct), floor, fmt_usd(floor))
+            dc = {
+                "title":  f"{'📈' if pct > 0 else '📉'} Floor {direction} {abs(pct):.1f}%!",
+                "color":  0x00FF00 if pct > 0 else 0xFF0000,
+                "fields": [
+                    {"name": "New",    "value": f"{floor:.4f} ETH ({fmt_usd(floor)})", "inline": True},
+                    {"name": "Old",    "value": f"{last:.4f} ETH",                    "inline": True},
+                    {"name": "Change", "value": f"{pct:+.1f}%",                        "inline": True},
+                ],
+                "timestamp": datetime.datetime.utcnow().isoformat()
+            }
+            post_all(col, tw, dc)
+    cd["last_floor"] = floor
 
 # ================================================================
-# FEATURE 4: RANKINGS
+# FEATURE 5: VOLUME MILESTONES
+# ================================================================
+
+def check_milestones(col, db):
+    slug = col["slug"]; cd = db["collections"][slug]
+    vol  = cd.get("total_volume", 0.0)
+    hits = cd.get("milestones_hit", [])
+    for m in sorted(col.get("volume_milestones", [])):
+        if vol >= m and m not in hits:
+            tw = tweet_milestone(m, vol)
+            dc = {
+                "title":  f"🎉 {m} ETH Milestone!",
+                "color":  0xFFD700,
+                "fields": [{"name": "Volume", "value": f"{vol:.2f} ETH ({fmt_usd(vol)})", "inline": True}],
+                "timestamp": datetime.datetime.utcnow().isoformat()
+            }
+            post_all(col, tw, dc)
+            hits.append(m)
+    cd["milestones_hit"] = hits
+
+# ================================================================
+# FEATURE 6: RANKINGS
 # ================================================================
 
 def post_rankings(col, db, now):
-    slug   = col["slug"]
-    emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    slug = col["slug"]
+    em   = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 
-    top_daily = get_top_buyers(db, slug, days=1)
-    if top_daily:
-        lines = "\n".join(f"{emojis[i]} {b[:6]}...{b[-4:]} — {p} pts" for i, (b, p) in enumerate(top_daily))
-        post_everywhere(col,
-            f"🏆 DAILY {col['name'].upper()} RANKING 🏆\n\n{lines}\n\n#{col['name']} #NFT",
-            {"title": f"🏆 Daily Ranking — {col['name']}", "color": 0x5865F2,
-             "fields": [{"name": f"{emojis[i]} #{i+1}", "value": f"`{b[:6]}...{b[-4:]}` — **{p} pts**", "inline": False} for i, (b, p) in enumerate(top_daily)],
+    td = top_spenders(db, slug, 1)
+    if td:
+        lines = "\n".join(f"{em[i]} {b[:6]}...{b[-4:]} — {e:.3f} ETH ({fmt_usd(e)})" for i, (b, e) in enumerate(td))
+        post_all(col,
+            tweet_daily_ranking(lines),
+            {"title": "🏆 Daily Ranking", "color": 0x5865F2,
+             "fields": [{"name": f"{em[i]} #{i+1}", "value": f"`{b[:6]}...{b[-4:]}` — **{e:.3f} ETH**", "inline": False} for i, (b, e) in enumerate(td)],
              "timestamp": datetime.datetime.utcnow().isoformat()}
         )
 
     if now.weekday() == 6:
-        top_weekly = get_top_buyers(db, slug, days=7)
-        if top_weekly:
-            lines = "\n".join(f"{emojis[i]} {b[:6]}...{b[-4:]} — {p} pts" for i, (b, p) in enumerate(top_weekly))
-            post_everywhere(col,
-                f"🏆 WEEKLY {col['name'].upper()} RANKING 🏆\n\n{lines}\n\n#{col['name']} #NFT",
-                {"title": f"🏆 Weekly Ranking — {col['name']}", "color": 0xFFD700,
-                 "fields": [{"name": f"{emojis[i]} #{i+1}", "value": f"`{b[:6]}...{b[-4:]}` — **{p} pts**", "inline": False} for i, (b, p) in enumerate(top_weekly)],
+        tw = top_spenders(db, slug, 7)
+        if tw:
+            lines = "\n".join(f"{em[i]} {b[:6]}...{b[-4:]} — {e:.3f} ETH ({fmt_usd(e)})" for i, (b, e) in enumerate(tw))
+            post_all(col,
+                tweet_weekly_ranking(lines),
+                {"title": "🏆 Weekly Ranking", "color": 0xFFD700,
+                 "fields": [{"name": f"{em[i]} #{i+1}", "value": f"`{b[:6]}...{b[-4:]}` — **{e:.3f} ETH**", "inline": False} for i, (b, e) in enumerate(tw)],
                  "timestamp": datetime.datetime.utcnow().isoformat()}
             )
-            winner, pts = top_weekly[0]
-            post_everywhere(col,
-                f"⭐ COLLECTOR OF THE WEEK — {col['name']}\n🏆 {winner[:6]}...{winner[-4:]}\nPoints: {pts}\n#{col['name']} #CollectorOfTheWeek",
+            winner, eth_spent = tw[0]
+            post_all(col,
+                tweet_cotw(f"{winner[:6]}...{winner[-4:]}", eth_spent),
                 {"title": "⭐ Collector of the Week!", "color": 0xFFD700,
-                 "fields": [{"name":"Wallet","value":f"`{winner}`","inline":False},{"name":"Points","value":str(pts),"inline":True}],
+                 "fields": [{"name": "Wallet", "value": f"`{winner}`", "inline": False}, {"name": "Spent", "value": f"{eth_spent:.3f} ETH ({fmt_usd(eth_spent)})", "inline": True}],
                  "timestamp": datetime.datetime.utcnow().isoformat()}
             )
-
 
 # ================================================================
 # MAIN
 # ================================================================
 
 def main():
-    print("=" * 50)
-    print("  NFT Pro Bot — OpenSea API v2")
-    print(f"  Collections: {[c['name'] for c in COLLECTIONS]}")
-    print("=" * 50)
-
+    print("="*50 + "\n  Normies Bot — Live\n" + "="*50)
     init_db()
-    last_rank_date = None
-    floor_counter  = 0
+    last_rank = None
+    fc        = 0
 
     while True:
         now = datetime.datetime.utcnow()
@@ -362,26 +559,32 @@ def main():
 
         for col in COLLECTIONS:
             try: process_sales(col, db)
-            except Exception as e: print(f"[{col['name']}] Sales error: {e}")
+            except Exception as e: print(f"[Sales ERR] {e}")
 
-            try: check_volume_milestones(col, db)
-            except Exception as e: print(f"[{col['name']}] Milestone error: {e}")
+            try: check_burns(col, db)
+            except Exception as e: print(f"[Burns ERR] {e}")
 
-        floor_counter += 1
-        if floor_counter >= FLOOR_CHECK_EVERY:
+            try: check_canvas_changes(col, db)
+            except Exception as e: print(f"[Canvas ERR] {e}")
+
+            try: check_milestones(col, db)
+            except Exception as e: print(f"[Milestone ERR] {e}")
+
+        fc += 1
+        if fc >= FLOOR_CHECK_EVERY:
             for col in COLLECTIONS:
-                try: check_floor_price(col, db)
-                except Exception as e: print(f"[{col['name']}] Floor error: {e}")
-            floor_counter = 0
+                try: check_floor(col, db)
+                except Exception as e: print(f"[Floor ERR] {e}")
+            fc = 0
 
         save_db(db)
 
-        if now.hour == DAILY_HOUR and now.minute == 0 and last_rank_date != now.date():
+        if now.hour == DAILY_HOUR and now.minute == 0 and last_rank != now.date():
             db = load_db()
             for col in COLLECTIONS:
                 try: post_rankings(col, db, now)
-                except Exception as e: print(f"[{col['name']}] Ranking error: {e}")
-            last_rank_date = now.date()
+                except Exception as e: print(f"[Ranking ERR] {e}")
+            last_rank = now.date()
 
         time.sleep(CHECK_INTERVAL)
 
